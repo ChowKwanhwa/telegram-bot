@@ -1,357 +1,241 @@
+#如果是topic，使用flag --topic，并指定topic-id，如python sender.py --topic --topic-id 3
+
 import os
-import asyncio
-import logging
 import pandas as pd
 from telethon import TelegramClient
-from datetime import datetime
+import asyncio
 import random
-import time
+from telethon.tl.types import InputPeerChannel, ReactionEmoji
+from telethon.tl.functions.messages import GetHistoryRequest, SendReactionRequest
+import emoji
 from dotenv import load_dotenv
-import sys
-from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
-import tempfile
-import subprocess
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import (
-    ChannelPrivateError,
-    InviteHashInvalidError,
-    UserAlreadyParticipantError,
-    FloodWaitError
-)
+import argparse
 
 # 加载.env文件
 load_dotenv()
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('auto_send.log'),
-        logging.StreamHandler()
-    ]
-)
+# 从环境变量获取API凭据
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
 
-# 从环境变量获取配置
-API_ID = int(os.getenv('API_ID'))
-API_HASH = os.getenv('API_HASH')
+# 其他配置
+TARGET_GROUP = "https://t.me/linqingfeng221"
+TOPIC_ID = 3
 SESSIONS_DIR = "sessions"
 MESSAGES_FILE = "话术/latest_messages.csv"
-MEDIA_DIR = "话术/media_files"
-TARGET_GROUPS = ['@fsfwettwg']
 
-async def load_messages():
-    """加载消息数据"""
-    try:
-        df = pd.read_csv(MESSAGES_FILE)
-        messages = []
-        for _, row in df.iterrows():
-            msg = {
-                'type': row['message_type'],
-                'content': row['message_content'],
-                'media_path': row['media_path'] if pd.notna(row['media_path']) else None
-            }
-            messages.append(msg)
-        logging.info(f"成功加载 {len(messages)} 条消息")
-        return messages
-    except Exception as e:
-        logging.error(f"加载消息失败: {str(e)}")
-        return []
+# 读取消息数据
+df = pd.read_csv(MESSAGES_FILE)
+messages = df.to_dict('records')
 
-async def convert_webm_to_mp4(webm_path):
-    """将webm文件转换为mp4格式"""
+# 表情符号列表用于reactions
+REACTION_EMOJIS = ['👍',  '🔥', '🎉', '🔥']
+
+# 添加代理列表配置
+PROXY_LIST = [
+    {
+        'proxy_type': 'socks5',
+        'addr': '119.42.39.170',
+        'port': 5798,
+        'username': 'Maomaomao77',
+        'password': 'Maomaomao77'
+    },
+    {
+        'addr': "86.38.26.189",
+        'port': 6354,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "198.105.111.87",
+        'port': 6765,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "185.236.95.32",
+        'port': 5993,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    }
+]
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Telegram message sender')
+    parser.add_argument('--topic', action='store_true', 
+                       help='Enable topic mode for forum channels')
+    parser.add_argument('--topic-id', type=int,
+                       help=f'Topic ID for forum channels (default: {TOPIC_ID})')
+    args = parser.parse_args()
+    
+    # 如果启用了topic模式但没有指定topic-id，使用默认的TOPIC_ID
+    if args.topic and args.topic_id is None:
+        args.topic_id = TOPIC_ID
+        
+    return args
+
+async def try_connect_with_proxy(session_file, proxy_config):
+    """尝试使用特定代理连接"""
+    session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
+    client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_config)
+    
     try:
-        # 创建临时文件
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
-            mp4_path = tmp_file.name
-            
-        # 使用 ffmpeg 命令行转换
-        command = [
-            'ffmpeg',
-            '-i', webm_path,
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-y',  # 覆盖输出文件
-            mp4_path
-        ]
+        print(f"正在尝试使用代理 {proxy_config['addr']}:{proxy_config['port']} 连接...")
+        await client.connect()
         
-        # 执行转换
-        process = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            print(f"[成功] 使用代理 {proxy_config['addr']} 连接成功!")
+            print(f"       账号: {me.first_name} (@{me.username})")
+            return client
         
-        if process.returncode == 0:
-            logging.info(f"视频转换成功: {webm_path} -> {mp4_path}")
-            return mp4_path
-        else:
-            logging.error(f"视频转换失败: {process.stderr}")
-            if os.path.exists(mp4_path):
-                os.remove(mp4_path)
-            return None
-            
+        await client.disconnect()
+        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: 未授权")
+        return None
+        
     except Exception as e:
-        logging.error(f"视频转换失败: {str(e)}")
-        if 'mp4_path' in locals() and os.path.exists(mp4_path):
-            os.remove(mp4_path)
+        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: {str(e)}")
+        try:
+            await client.disconnect()
+        except:
+            pass
         return None
 
-async def send_message(client, chat_id, message):
-    """发送单条消息"""
-    try:
-        me = await client.get_me()
-        username = f"@{me.username}" if me.username else me.id
+async def init_clients():
+    """初始化所有客户端，使用代理轮换机制"""
+    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
+    clients = []
+    
+    for session_file in session_files:
+        client = None
+        # 尝试所有代理
+        for proxy in PROXY_LIST:
+            client = await try_connect_with_proxy(session_file, proxy)
+            if client:
+                clients.append(client)
+                await join_group(client)
+                break
         
-        if message['type'] == 'text':
-            await client.send_message(chat_id, message['content'])
-            logging.info(f"{username} 发送文本消息: {message['content'][:30]}...")
-            
-        elif message['type'] in ['video', 'document']:
-            if message['media_path'] and os.path.exists(message['media_path']):
-                file_path = message['media_path']
-                # 如果是webm文件，先转换为mp4
-                if file_path.lower().endswith('.webm'):
-                    logging.info(f"正在转换webm文件: {file_path}")
-                    mp4_path = await convert_webm_to_mp4(file_path)
-                    if mp4_path:
-                        try:
-                            await client.send_file(
-                                chat_id,
-                                mp4_path,
-                                force_document=False,
-                                supports_streaming=True
-                            )
-                            logging.info(f"{username} 发送转换后的视频: {os.path.basename(file_path)}")
-                        finally:
-                            # 确保无论发送成功与否都删除临时文件
-                            if os.path.exists(mp4_path):
-                                os.remove(mp4_path)
-                    else:
-                        logging.error(f"无法转换文件: {file_path}")
-                        return False
-                else:
-                    await client.send_file(chat_id, file_path)
-                    logging.info(f"{username} 发送文件: {os.path.basename(file_path)}")
-            else:
-                logging.error(f"文件不存在: {message['media_path']}")
-                return False
-                    
-        elif message['type'] in ['image', 'sticker', 'emoji']:
-            if message['media_path'] and os.path.exists(message['media_path']):
-                await client.send_file(chat_id, message['media_path'])
-                logging.info(f"{username} 发送媒体: {os.path.basename(message['media_path'])}")
-            elif message['type'] == 'emoji':
-                await client.send_message(chat_id, message['content'])
-                logging.info(f"{username} 发送表情")
-            else:
-                logging.error(f"文件不存在: {message['media_path']}")
-                return False
-        
-        # 随机等待2-3秒
-        await asyncio.sleep(random.uniform(2, 3))
-        return True
-        
-    except Exception as e:
-        logging.error(f"发送消息失败 ({username}): {str(e)}")
-        return False
+        if not client:
+            print(f"警告: {session_file} 所有代理均连接失败!")
+    
+    return clients
 
-async def download_media_from_group(client, group_id):
-    """从群组下载媒体文件"""
+async def join_group(client):
     try:
-        logging.info(f"开始从 {group_id} 下载媒体文件...")
-        
-        # 创建media_files目录
-        os.makedirs(os.path.join("话术", "media_files", "CoinetOfficial"), exist_ok=True)
-        
-        # 获取最近的消息
-        async for message in client.iter_messages(group_id, limit=100):  # 可以调整limit
-            if message.media:
-                # 获取文件名
-                if message.file:
-                    original_filename = message.file.name or f"{message.date.strftime('%Y%m%d_%H%M%S')}_{message.sender_id}"
-                    
-                    # 根据媒体类型设置扩展名
-                    if isinstance(message.media, MessageMediaDocument):
-                        ext = os.path.splitext(original_filename)[1] or '.mp4'  # 默认扩展名
-                    elif isinstance(message.media, MessageMediaPhoto):
-                        ext = '.jpg'
-                    else:
-                        ext = os.path.splitext(original_filename)[1] or ''
-                    
-                    # 构建保存路径
-                    filename = f"{message.date.strftime('%Y%m%d_%H%M%S')}_{message.sender.username or message.sender_id}{ext}"
-                    save_path = os.path.join("话术", "media_files", "CoinetOfficial", filename)
-                    
-                    # 如果文件不存在，则下载
-                    if not os.path.exists(save_path):
-                        await message.download_media(save_path)
-                        logging.info(f"已下载: {filename}")
-                        await asyncio.sleep(0.5)  # 添加短暂延迟，避免过快下载
-        
-        logging.info("媒体文件下载完成")
-        
+        await client(JoinChannelRequest(TARGET_GROUP))
+        print(f"成功加入 {TARGET_GROUP}")
     except Exception as e:
-        logging.error(f"下载媒体文件时出错: {str(e)}")
+        print(f"Error joining group: {e}")
 
-async def ensure_group_membership(client, group):
-    """确保账号已加入群组"""
+async def get_recent_messages(client, limit=5, use_topic=False, topic_id=None):
+    channel = await client.get_entity(TARGET_GROUP)
+    messages = []
+    kwargs = {}
+    if use_topic:
+        kwargs['reply_to'] = topic_id
+    async for message in client.iter_messages(channel, limit=limit, **kwargs):
+        messages.append(message)
+    return messages[::-1]  # 反转消息列表，使最早的消息在前面
+
+async def process_action(client, message_data, recent_messages, use_topic, topic_id):
     try:
-        me = await client.get_me()
-        username = f"@{me.username}" if me.username else me.id
+        channel = await client.get_entity(TARGET_GROUP)
         
-        try:
-            # 检查是否已经是群组成员
-            entity = await client.get_entity(group)
-            participants = await client.get_participants(entity, limit=1)
-            logging.info(f"账号 {username} 已经是群组 {group} 的成员")
-            return True
-            
-        except ChannelPrivateError:
-            # 如果是私有群组，尝试加入
-            if group.startswith('@'):
-                # 公开群组
-                try:
-                    await client(JoinChannelRequest(group))
-                    logging.info(f"账号 {username} 成功加入群组 {group}")
-                    # 加入后等待5-10秒
-                    await asyncio.sleep(random.uniform(5, 10))
-                    return True
-                except Exception as e:
-                    logging.error(f"账号 {username} 加入群组 {group} 失败: {str(e)}")
-                    return False
+        # 在topic模式下添加对第五条消息的互动概率
+        if use_topic and recent_messages and len(recent_messages) >= 5:
+            random_value = random.random()
+            if random_value < 0.3:  # 30%概率回复第五条消息
+                target_message = recent_messages[4]  # 第五条消息
+                kwargs = {'reply_to': target_message.id}
+                await client.send_message(channel, message_data['message_content'], **kwargs)
+                return
+            elif random_value < 0.2:  # 20%概率对第五条消息添加表情反应
+                target_message = recent_messages[4]  # 第五条消息
+                chosen_emoji = random.choice(REACTION_EMOJIS)
+                reaction = [ReactionEmoji(emoticon=chosen_emoji)]
+                
+                await client(SendReactionRequest(
+                    peer=channel,
+                    msg_id=target_message.id,
+                    reaction=reaction
+                ))
+                me = await client.get_me()
+                username = f"@{me.username}" if me.username else me.id
+                print(f"{username} 对消息ID {target_message.id} 进行了表情({chosen_emoji})反应")
+                return
+        
+        # 原有的处理逻辑
+        if recent_messages and random.random() < 0.2:
+            target_message = recent_messages[-1]
+            if random.random() < 0.5:
+                emoji_reactions = ['👍', '🔥', '🎉', '💯']
+                chosen_emoji = random.choice(emoji_reactions)
+                reaction = [ReactionEmoji(emoticon=chosen_emoji)]
+                reaction_text = '点赞' if chosen_emoji == '👍' else f'表情({chosen_emoji})'
+                
+                await client(SendReactionRequest(
+                    peer=channel,
+                    msg_id=target_message.id,
+                    reaction=reaction
+                ))
+                me = await client.get_me()
+                username = f"@{me.username}" if me.username else me.id
+                print(f"{username} 对消息ID {target_message.id} 进行了{reaction_text}反应")
             else:
-                # 私有群组（通过邀请链接）
-                try:
-                    hash = group.split('/')[-1]
-                    await client(ImportChatInviteRequest(hash))
-                    logging.info(f"账号 {username} 成功加入私有群组")
-                    # 加入后等待5-10秒
-                    await asyncio.sleep(random.uniform(5, 10))
-                    return True
-                except UserAlreadyParticipantError:
-                    logging.info(f"账号 {username} 已经是群组成员")
-                    return True
-                except InviteHashInvalidError:
-                    logging.error(f"群组 {group} 的邀请链接无效")
-                    return False
-                except FloodWaitError as e:
-                    logging.error(f"账号 {username} 需要等待 {e.seconds} 秒后才能加入群组")
-                    return False
-                except Exception as e:
-                    logging.error(f"账号 {username} 加入私有群组失败: {str(e)}")
-                    return False
-                    
+                kwargs = {'reply_to': target_message.id}
+                if use_topic:
+                    kwargs['reply_to'] = topic_id
+                await client.send_message(channel, message_data['message_content'], **kwargs)
+        else:
+            kwargs = {}
+            if use_topic:
+                kwargs['reply_to'] = topic_id
+                
+            if message_data['message_type'] in ['video', 'photo']:
+                media_path = message_data['media_path'].replace('话术\\', '')
+                await client.send_file(channel, os.path.join("话术", media_path), **kwargs)
+            else:
+                await client.send_message(channel, message_data['message_content'], **kwargs)
     except Exception as e:
-        logging.error(f"检查群组成员状态失败: {str(e)}")
-        return False
+        print(f"Error processing action: {e}")
 
 async def main():
-    # 获取所有session文件
-    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
-    if not session_files:
-        logging.error("未找到任何session文件")
-        return
-        
-    logging.info(f"找到 {len(session_files)} 个session文件")
+    args = parse_args()
+    topic_id = args.topic_id if args.topic else None
+    print(f"Using topic mode: {args.topic}, topic ID: {topic_id}")
     
-    # 创建客户端列表
-    clients = []
-    for session_file in session_files:
-        session_path = os.path.join(SESSIONS_DIR, session_file[:-8])
-        client = TelegramClient(session_path, API_ID, API_HASH)
-        clients.append(client)
-    
-    # 连接所有客户端并确保加入群组
-    for client in clients:
-        try:
-            await client.start()
-            me = await client.get_me()
-            username = f"@{me.username}" if me.username else me.id
-            logging.info(f"已登录账号: {me.first_name} ({username})")
-            
-            # 确保加入所有目标群组
-            for group in TARGET_GROUPS:
-                if not await ensure_group_membership(client, group):
-                    logging.error(f"账号 {username} 无法加入群组 {group}，跳过该账号")
-                    await client.disconnect()
-                    clients.remove(client)
-                    break
-                
-        except Exception as e:
-            logging.error(f"客户端连接或加入群组失败: {str(e)}")
-            clients.remove(client)
-            continue
+    # 使用新的初始化方法
+    clients = await init_clients()
     
     if not clients:
-        logging.error("没有可用的客户端，程序退出")
+        print("错误: 没有成功连接的客户端!")
         return
-        
-    # 使用第一个可用客户端下载媒体文件
-    try:
-        me = await clients[0].get_me()
-        logging.info(f"使用账号 {me.username} 下载媒体文件")
-        
-        for group in TARGET_GROUPS:
-            await download_media_from_group(clients[0], group)
-            
-    except Exception as e:
-        logging.error(f"下载媒体文件失败: {str(e)}")
-        return
-
-    # 重新加载消息
-    messages = await load_messages()
-    if not messages:
-        return
-        
-    # 连接所有客户端
-    for client in clients:
-        try:
-            await client.start()
-            me = await client.get_me()
-            logging.info(f"已登录账号: {me.first_name} (@{me.username})")
-        except Exception as e:
-            logging.error(f"客户端连接失败: {str(e)}")
-            return
     
-    try:
-        # 循环发送消息
-        current_client_index = 0
+    print(f"成功初始化 {len(clients)} 个客户端")
+    
+    # 处理消息发送
+    for i in range(0, len(messages), len(clients)):
+        # 获取最近的消息
+        recent_messages = await get_recent_messages(clients[0], limit=5, 
+                                                  use_topic=args.topic, 
+                                                  topic_id=topic_id)
         
-        while True:
-            for message in messages:
-                # 轮流使用不同账号
-                client = clients[current_client_index]
-                current_client_index = (current_client_index + 1) % len(clients)
-                
-                # 对每个群组发送消息
-                for group in TARGET_GROUPS:
-                    success = await send_message(client, group, message)
-                    if not success:
-                        logging.warning(f"消息发送失败，跳过当前消息")
-                        continue
+        batch_messages = messages[i:i + len(clients)]
+        if not batch_messages:
+            break
             
-            # 一轮发完后等待30-60分钟
-            wait_time = random.uniform(1800, 3600)
-            logging.info(f"本轮消息发送完成,等待 {wait_time/60:.1f} 分钟后开始下一轮...")
-            await asyncio.sleep(wait_time)
-            
-    except KeyboardInterrupt:
-        logging.info("收到停止信号，正在关闭...")
-    except Exception as e:
-        logging.error(f"运行出错: {str(e)}")
-    finally:
-        # 断开所有客户端连接
-        for client in clients:
-            try:
-                await client.disconnect()
-            except:
-                pass
+        available_clients = clients.copy()
+        random.shuffle(available_clients)
+        
+        for msg, client in zip(batch_messages, available_clients):
+            await process_action(client, msg, recent_messages, args.topic, topic_id)
+            await asyncio.sleep(random.uniform(1, 2))
+    
+    # 关闭所有客户端
+    for client in clients:
+        await client.disconnect()
 
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n程序已停止") 
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -13,15 +13,45 @@ API_HASH = os.getenv("API_HASH")
 # 会话目录
 SESSIONS_DIR = "sessions"
 
-async def test_session(session_file):
-    """测试单个会话文件"""
+# 代理列表
+PROXY_LIST = [
+    {
+        'addr': "119.42.39.170",
+        'port': 5798,
+        'username': 'Maomaomao77',
+        'password': 'Maomaomao77'
+    },
+    {
+        'addr': "86.38.26.189",
+        'port': 6354,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "198.105.111.87",
+        'port': 6765,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "185.236.95.32",
+        'port': 5993,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    }
+]
+
+async def test_session_with_proxy(session_file, proxy_config):
+    """使用指定代理测试单个会话文件"""
     session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
     
-    # 添加代理配置
+    # 构建代理配置
     proxy = {
         'proxy_type': 'socks5',
-        'addr': '132.148.167.243',
-        'port': 40349,
+        'addr': proxy_config['addr'],
+        'port': proxy_config['port'],
+        'username': proxy_config['username'],
+        'password': proxy_config['password']
     }
     
     try:
@@ -29,7 +59,7 @@ async def test_session(session_file):
         client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy)
         
         # 尝试连接
-        print(f"\n正在测试 {session_file}...")
+        print(f"\n正在使用代理 {proxy_config['addr']}:{proxy_config['port']} 测试 {session_file}...")
         await client.connect()
         
         # 检查是否已授权
@@ -40,17 +70,26 @@ async def test_session(session_file):
             print(f"✅ {session_file} 连接成功!")
             print(f"   账号信息: {username}")
             print(f"   手机号: {me.phone}")
-            status = "有效"
+            await client.disconnect()
+            return True, session_file, "有效"
+            
         else:
             print(f"❌ {session_file} 未授权!")
-            status = "未授权"
-            
-        await client.disconnect()
-        return session_file, status
+            await client.disconnect()
+            return False, session_file, "未授权"
         
     except Exception as e:
-        print(f"❌ {session_file} 测试失败: {str(e)}")
-        return session_file, "无效"
+        print(f"❌ 使用代理 {proxy_config['addr']} 测试失败: {str(e)}")
+        return False, session_file, "连接失败"
+
+async def test_session(session_file):
+    """尝试使用所有代理测试会话文件"""
+    for proxy in PROXY_LIST:
+        success, session, status = await test_session_with_proxy(session_file, proxy)
+        if success:
+            return session, status
+    
+    return session_file, "所有代理均失败"
 
 async def main():
     print("开始测试会话文件...\n")

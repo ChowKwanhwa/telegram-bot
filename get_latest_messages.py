@@ -47,6 +47,35 @@ SOURCE_GROUPS = [
 # CSV表头配置
 CSV_HEADERS = ['timestamp', 'group_name', 'username', 'message_type', 'message_content', 'media_path']
 
+# 添加代理列表配置
+PROXY_LIST = [
+    {
+        'proxy_type': 'socks5',
+        'addr': '119.42.39.170',
+        'port': 5798,
+        'username': 'Maomaomao77',
+        'password': 'Maomaomao77'
+    },
+    {
+        'addr': "86.38.26.189",
+        'port': 6354,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "198.105.111.87",
+        'port': 6765,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "185.236.95.32",
+        'port': 5993,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    }
+]
+
 def sanitize_filename(filename):
     """清理文件名，移除非法字符"""
     return "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')).strip()
@@ -145,7 +174,7 @@ async def process_messages(client, group):
                     if media_path:
                         media_count += 1
                 
-                # 准备数据
+                # 备数据
                 message_data = {
                     'timestamp': message.date.strftime('%Y-%m-%d %H:%M:%S'),
                     'group_name': group,
@@ -179,6 +208,32 @@ async def join_groups(client, groups):
         except Exception as e:
             print(f"✗ 加入群组 {group} 失败: {str(e)}")
 
+async def try_connect_with_proxy(session_path, proxy_config):
+    """尝试使用特定代理连接"""
+    client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_config)
+    
+    try:
+        logging.info(f"正在尝试使用代理 {proxy_config['addr']}:{proxy_config['port']} 连接...")
+        await client.connect()
+        
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            logging.info(f"[成功] 使用代理 {proxy_config['addr']} 连接成功!")
+            logging.info(f"       账号: {me.first_name} (@{me.username})")
+            return client
+        
+        await client.disconnect()
+        logging.error(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: 未授权")
+        return None
+        
+    except Exception as e:
+        logging.error(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: {str(e)}")
+        try:
+            await client.disconnect()
+        except:
+            pass
+        return None
+
 async def main():
     # 获取第一个可用的 session 文件
     session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
@@ -191,13 +246,18 @@ async def main():
     session_path = os.path.join(SESSIONS_DIR, session_files[0][:-8])
     logging.info(f"使用 session 文件: {session_files[0]}")
     
-    client = TelegramClient(session_path, api_id, api_hash)
+    # 尝试所有代理
+    client = None
+    for proxy in PROXY_LIST:
+        client = await try_connect_with_proxy(session_path, proxy)
+        if client:
+            break
+    
+    if not client:
+        logging.error("所有代理均连接失败!")
+        return
     
     try:
-        await client.start()
-        me = await client.get_me()
-        print(f"已登录账号: {me.first_name} (@{me.username})")
-        
         # 先加入所有群组
         print("\n=== 加入群组 ===")
         await join_groups(client, SOURCE_GROUPS)

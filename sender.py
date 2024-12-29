@@ -20,7 +20,7 @@ API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 
 # 其他配置
-TARGET_GROUP = "linqingfeng221"
+TARGET_GROUP = "https://t.me/linqingfeng221"
 TOPIC_ID = 3
 SESSIONS_DIR = "sessions"
 MESSAGES_FILE = "话术/latest_messages.csv"
@@ -31,6 +31,35 @@ messages = df.to_dict('records')
 
 # 表情符号列表用于reactions
 REACTION_EMOJIS = ['👍',  '🔥', '🎉', '🔥']
+
+# 添加代理列表配置
+PROXY_LIST = [
+    {
+        'proxy_type': 'socks5',
+        'addr': '119.42.39.170',
+        'port': 5798,
+        'username': 'Maomaomao77',
+        'password': 'Maomaomao77'
+    },
+    {
+        'addr': "86.38.26.189",
+        'port': 6354,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "198.105.111.87",
+        'port': 6765,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    },
+    {
+        'addr': "185.236.95.32",
+        'port': 5993,
+        'username': 'binghua99',
+        'password': 'binghua99'
+    }
+]
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Telegram message sender')
@@ -46,23 +75,57 @@ def parse_args():
         
     return args
 
-async def init_client(session_file):
-    # 添加代理配置
-    proxy = {
-        'proxy_type': 'socks5',
-        'addr': '132.148.167.243',
-        'port': 40349,
-    }
+async def try_connect_with_proxy(session_file, proxy_config):
+    """尝试使用特定代理连接"""
+    session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
+    client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_config)
     
-    client = TelegramClient(os.path.join(SESSIONS_DIR, session_file.replace('.session', '')), 
-                           API_ID, API_HASH, proxy=proxy)
-    await client.start()
-    return client
+    try:
+        print(f"正在尝试使用代理 {proxy_config['addr']}:{proxy_config['port']} 连接...")
+        await client.connect()
+        
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            print(f"[成功] 使用代理 {proxy_config['addr']} 连接成功!")
+            print(f"       账号: {me.first_name} (@{me.username})")
+            return client
+        
+        await client.disconnect()
+        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: 未授权")
+        return None
+        
+    except Exception as e:
+        print(f"[失败] 使用代理 {proxy_config['addr']} 连接失败: {str(e)}")
+        try:
+            await client.disconnect()
+        except:
+            pass
+        return None
+
+async def init_clients():
+    """初始化所有客户端，使用代理轮换机制"""
+    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
+    clients = []
+    
+    for session_file in session_files:
+        client = None
+        # 尝试所有代理
+        for proxy in PROXY_LIST:
+            client = await try_connect_with_proxy(session_file, proxy)
+            if client:
+                clients.append(client)
+                await join_group(client)
+                break
+        
+        if not client:
+            print(f"警告: {session_file} 所有代理均连接失败!")
+    
+    return clients
 
 async def join_group(client):
     try:
         await client(JoinChannelRequest(TARGET_GROUP))
-        print(f"Successfully joined {TARGET_GROUP}")
+        print(f"成功加入 {TARGET_GROUP}")
     except Exception as e:
         print(f"Error joining group: {e}")
 
@@ -74,7 +137,7 @@ async def get_recent_messages(client, limit=5, use_topic=False, topic_id=None):
         kwargs['reply_to'] = topic_id
     async for message in client.iter_messages(channel, limit=limit, **kwargs):
         messages.append(message)
-    return messages[::-1]  # 反转消息列表，使最早的消���在前面
+    return messages[::-1]  # 反转消息列表，使最早的消息在前面
 
 async def process_action(client, message_data, recent_messages, use_topic, topic_id):
     try:
@@ -141,27 +204,25 @@ async def process_action(client, message_data, recent_messages, use_topic, topic
 async def main():
     args = parse_args()
     topic_id = args.topic_id if args.topic else None
-    print(f"Using topic mode: {args.topic}, topic ID: {topic_id}")  # 添加调试信息
+    print(f"Using topic mode: {args.topic}, topic ID: {topic_id}")
     
-    # 获取所有session文件
-    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
-    num_clients = len(session_files)
+    # 使用新的初始化方法
+    clients = await init_clients()
     
-    # 初始化所有客户端
-    clients = []
-    for session_file in session_files:
-        client = await init_client(session_file)
-        clients.append(client)
-        await join_group(client)
+    if not clients:
+        print("错误: 没有成功连接的客户端!")
+        return
+    
+    print(f"成功初始化 {len(clients)} 个客户端")
     
     # 处理消息发送
-    for i in range(0, len(messages), num_clients):
+    for i in range(0, len(messages), len(clients)):
         # 获取最近的消息
         recent_messages = await get_recent_messages(clients[0], limit=5, 
                                                   use_topic=args.topic, 
                                                   topic_id=topic_id)
         
-        batch_messages = messages[i:i + num_clients]
+        batch_messages = messages[i:i + len(clients)]
         if not batch_messages:
             break
             
