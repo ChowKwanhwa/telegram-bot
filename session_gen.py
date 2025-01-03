@@ -2,6 +2,7 @@
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.errors import SessionPasswordNeededError
 from dotenv import load_dotenv
 import os
 
@@ -20,30 +21,12 @@ PROXY_LIST = [
         'port': 5798,
         'username': 'Maomaomao77',
         'password': 'Maomaomao77'
-    },
-    {
-        'addr': "86.38.26.189",
-        'port': 6354,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "198.105.111.87",
-        'port': 6765,
-        'username': 'binghua99',
-        'password': 'binghua99'
-    },
-    {
-        'addr': "185.236.95.32",
-        'port': 5993,
-        'username': 'binghua99',
-        'password': 'binghua99'
     }
 ]
 
 async def try_connect_with_proxy(phone, sessions_dir, proxy_config):
     """尝试使用特定代理连接"""
-    session_file = os.path.join(sessions_dir, f"{phone.replace('+', '')}.session")
+    session_file = os.path.join(sessions_dir, f"+{phone.replace('+', '')}.session")
     
     try:
         print(f"\n正在使用代理 {proxy_config['addr']}:{proxy_config['port']} 尝试连接...")
@@ -55,7 +38,12 @@ async def try_connect_with_proxy(phone, sessions_dir, proxy_config):
             print(f"\n正在发送验证码到 {phone}...")
             await client.send_code_request(phone)
             code = input(f"请输入发送到 {phone} 的验证码: ")
-            await client.sign_in(phone, code)
+            try:
+                await client.sign_in(phone, code)
+            except SessionPasswordNeededError:
+                print("检测到两步验证，请输入两步验证密码...")
+                password = input("请输入两步验证密码: ")
+                await client.sign_in(password=password)
         
         if await client.is_user_authorized():
             print(f"[成功] Session 文件已成功创建: {session_file}")
@@ -90,8 +78,7 @@ async def main():
     
     # 定义电话号码列表
     phone_numbers = [
-        '+16157061556',  # 替换为实际的电话号码
-        '+16157061573'
+        '+12692331210',  # 替换为实际的电话号码
     ]
     
     # 批量处理每个电话号码
@@ -109,4 +96,3 @@ async def main():
 if __name__ == '__main__':
     import asyncio
     asyncio.run(main())
-    
